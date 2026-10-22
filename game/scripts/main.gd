@@ -17,6 +17,7 @@ var shavings := Shavings.new()
 var hands := Hands.new()
 var sfx := Sfx.new()
 var ui := GameUI.new()
+var settings := Settings.new()
 
 var species: Dictionary
 var size: Dictionary
@@ -52,13 +53,17 @@ func _ready() -> void:
 	shavings.surface_height = Workshop.surface_height
 	add_child(shavings)
 	add_child(sfx)
+	settings.load_from_disk()
+	ui.settings = settings
 	add_child(ui)
 	ui.begin.connect(_on_begin)
 	ui.tool_selected.connect(select_tool)
 	ui.undo_pressed.connect(undo)
 	ui.flip_pressed.connect(flip)
 	ui.new_log_pressed.connect(func(): ui.show_start(true))
-	ui.mute_toggled.connect(func(m): sfx.muted = m)
+	ui.settings_changed.connect(_apply_settings)
+	ui.quit_pressed.connect(func(): get_tree().quit())
+	_apply_settings()
 	get_viewport().size_changed.connect(_on_resize)
 	start_session("basswood", "medium")
 	select_tool("sloyd")
@@ -84,6 +89,13 @@ func _debug_args() -> void:
 		elif a.begins_with("--zoom="):
 			zoom = float(a.substr(7))
 			_place_log()
+		elif a.begins_with("--tilt="):
+			pivot.basis = Basis(camera.global_basis.x, float(a.substr(7))) * pivot.basis
+		elif a == "--menu":
+			ui.open_menu()
+		elif a == "--settings":
+			ui.open_menu()
+			ui.show_settings(true)
 		elif a == "--noshadow":
 			log_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		elif a == "--nohands":
@@ -217,9 +229,7 @@ func start_session(species_id: String, size_id: String) -> void:
 	grip_top = false
 	carver.grip_top = false
 	hands.build_holding(size.radius, size.length, grip_top)
-	pivot.basis = Basis.from_euler(Vector3(0.28, 0.4, 0.12))
-	zoom = _default_zoom + 0.06 + (size.length - 12.0) * 0.01 + (size.radius - 3.0) * 0.03
-	_place_log()
+	reset_view()
 	ui.set_undo(false)
 
 
@@ -257,8 +267,42 @@ func _on_begin(species_id: String, size_id: String) -> void:
 	ui.show_start(false)
 
 
-func _place_log() -> void:
-	pivot.global_position = camera.global_position + _view_dir * zoom
+const DEFAULT_ORIENT := Vector3(0.28, 0.4, 0.12)
+const LAP_CLEARANCE := 0.025
+
+var _lift := 0.0
+
+## Keep the log at the chosen distance in front of you, and lift it just enough that no part of it
+## dips into the lap however it is turned (lowest point of the log's cylinder).
+func _place_log(delta := 1.0) -> void:
+	if size.is_empty():
+		return
+	var base := camera.global_position + _view_dir * zoom
+	var axis := pivot.global_basis.y.normalized()
+	var half: float = size.length * 0.5 * INCH
+	var r: float = size.radius * 1.1 * INCH
+	var drop := half * absf(axis.y) + r * sqrt(maxf(0.0, 1.0 - axis.y * axis.y))
+	var need := maxf(0.0, Workshop.LAP_Y + LAP_CLEARANCE + drop - base.y)
+	_lift = lerpf(_lift, need, 1.0 - exp(-delta * 12.0)) if delta < 1.0 else need
+	pivot.global_position = base + Vector3.UP * _lift
+
+
+func reset_view() -> void:
+	pivot.basis = Basis.from_euler(DEFAULT_ORIENT)
+	if grip_top:
+		pivot.basis = Basis(camera.global_basis.x, PI) * pivot.basis
+	zoom = _default_zoom + 0.06 + (size.length - 12.0) * 0.01 + (size.radius - 3.0) * 0.03
+	_place_log()
+
+
+func _apply_settings() -> void:
+	AudioServer.set_bus_volume_db(0, linear_to_db(maxf(settings.master, 0.0001)))
+	sfx.tools_gain = settings.carving if settings.carving_on else 0.0
+	sfx.ambience_gain = settings.ambience if settings.ambience_on else 0.0
+	var w := get_window()
+	var want := Window.MODE_EXCLUSIVE_FULLSCREEN if settings.fullscreen else Window.MODE_WINDOWED
+	if not OS.get_cmdline_user_args().has("--play") and w.mode != want:
+		w.mode = want
 
 
 # ------------------------------------------------------------------ tools, undo, grip
@@ -296,7 +340,12 @@ func flip() -> void:
 # ------------------------------------------------------------------ input
 
 func _unhandled_input(event: InputEvent) -> void:
-	if ui.start.visible:
+	if event is InputEventKey and event.pressed and not event.echo and (event as InputEventKey).keycode == KEY_ESCAPE:
+		_end_stroke()
+		mode = Mode.NONE
+		ui.back()
+		return
+	if ui.is_blocking():
 		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
@@ -343,16 +392,36 @@ func _unhandled_input(event: InputEvent) -> void:
 				flip()
 			KEY_H:
 				ui.toggle_hidden()
-			KEY_ESCAPE:
-				ui.help.visible = false
+			KEY_R:
+				reset_view()
 			KEY_F11:
-				var w := get_window()
-				w.mode = Window.MODE_WINDOWED if w.mode == Window.MODE_EXCLUSIVE_FULLSCREEN else Window.MODE_EXCLUSIVE_FULLSCREEN
+				settings.fullscreen = not settings.fullscreen
+				settings.save()
+				_apply_settings()
 
 
+## Sideways drag spins the log about its own axis (turning it in your hand); up/down tilts it
+## toward or away from you.
 func _rotate_log(rel: Vector2) -> void:
+	var k := 0.006 * settings.sensitivity
 	var right := camera.global_basis.x
-	pivot.basis = (Basis(Vector3.UP, rel.x * 0.006) * Basis(right, rel.y * 0.006) * pivot.basis).orthonormalized()
+	var b := pivot.basis * Basis(Vector3.UP, rel.x * k)
+	pivot.basis = (Basis(right, rel.y * k) * b).orthonormalized()
+
+
+func _keyboard_turn(delta: float) -> void:
+	if ui.is_blocking():
+		return
+	var spin := float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A))
+	var tilt := float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W))
+	var roll := float(Input.is_physical_key_pressed(KEY_E)) - float(Input.is_physical_key_pressed(KEY_Q))
+	if spin == 0.0 and tilt == 0.0 and roll == 0.0:
+		return
+	var speed := 1.6 * delta * settings.sensitivity
+	var b := pivot.basis * Basis(Vector3.UP, spin * speed)
+	b = Basis(camera.global_basis.x, tilt * speed) * b
+	b = Basis(-camera.global_basis.z, roll * speed) * b
+	pivot.basis = b.orthonormalized()
 
 
 ## Pointer ray converted into the log's grid space.
@@ -536,7 +605,9 @@ func _free_piece(p: Dictionary) -> void:
 
 # ------------------------------------------------------------------ frame
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_keyboard_turn(delta)
+	_place_log(delta)
 	_update_material(material, log_node)
 	for p in pieces:
 		_update_material(p.material, p.mesh.get_parent())

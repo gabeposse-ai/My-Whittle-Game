@@ -141,7 +141,7 @@ func grow_curl(stroke_id: int, log_node: Node3D, p: Vector3, t: Vector3, n: Vect
 	var c := _active
 	if not c.is_empty():
 		var changed: bool = c.stroke != stroke_id or (c.dir as Vector3).dot(t) < 0.5 \
-			or absf(c.width - width) > maxf(0.08, c.width * 0.6) or c.len > 7.0
+			or absf(c.width - width) > maxf(0.08, c.width * 0.6) or c.len > 6.0
 		if changed:
 			release_curl()
 			c = {}
@@ -150,13 +150,14 @@ func grow_curl(stroke_id: int, log_node: Node3D, p: Vector3, t: Vector3, n: Vect
 		mi.material_override = curl_material
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 		log_node.add_child(mi)
-		# Stiffer woods (harder) curl looser; thicker cuts curl looser.
-		var r0 := 0.08 + depth * 2.6 + width * 0.06 + (1.0 - softness) * 0.08
+		var thick := maxf(0.012, depth * 0.55)
+		# Tighter curls from thin cuts in soft wood; stiffer, harder woods curl looser.
+		var r0 := 0.07 + thick * 2.2 + width * 0.04 + (1.0 - softness) * 0.07
 		c = {
-			"mesh": mi, "len": 0.0, "width": maxf(0.04, width), "thick": maxf(0.012, depth * 0.55),
+			"mesh": mi, "len": 0.0, "width": maxf(0.04, width), "thick": thick,
 			"r0": r0, "stroke": stroke_id, "dir": t, "n": n, "root": p,
 			"path": PackedVector3Array([p]), "path_len": PackedFloat32Array([0.0]),
-			"wobble": randf() * 100.0, "twist": 0.0,
+			"wobble": randf() * 100.0, "pitch": randf_range(-0.25, 0.25),
 		}
 		_active = c
 	var path: PackedVector3Array = c.path
@@ -166,45 +167,56 @@ func grow_curl(stroke_id: int, log_node: Node3D, p: Vector3, t: Vector3, n: Vect
 	plen.append(plen[plen.size() - 1] + last.distance_to(p))
 	c.path = path
 	c.path_len = plen
-	c.len += add * 0.9
-	c.width = c.width * 0.85 + maxf(0.04, width) * 0.15
-	c.dir = (c.dir as Vector3).lerp(t, 0.3).normalized()
-	c.n = (c.n as Vector3).lerp(n, 0.3).normalized()
+	c.len += add * 0.9 # a shaving is a little shorter than the cut (it compresses as it curls)
 	c.root = p
+	# The frame is fixed when the curl starts: once wood has curled, it keeps its shape.
 	_build_attached(c)
 
 
-## Centreline of an attached curl, in log-local inches, rooted at the blade edge.
+## Radius of curvature at material coordinate m (inches from where the cut began): an Archimedean
+## spiral, so each newer turn wraps just outside the older ones instead of passing through them.
+func _curl_radius(c: Dictionary, m: float) -> float:
+	var r0: float = c.r0
+	return r0 + c.thick * 1.15 * m / (TAU * r0)
+
+
+## Centreline of an attached curl in log-local inches. Built from the blade (newest material)
+## back to the tip (oldest). Curvature is a function of the material coordinate, so the curled part
+## keeps its shape as the shaving lengthens; the coil simply rolls as new wood feeds in at the edge.
 func _attached_points(c: Dictionary) -> Dictionary:
 	var x: Vector3 = c.dir
-	var y: Vector3 = (c.n - x * (c.n as Vector3).dot(x)).normalized()
+	var y: Vector3 = ((c.n as Vector3) - x * (c.n as Vector3).dot(x)).normalized()
 	var z := x.cross(y).normalized()
+	var L: float = maxf(c.len, 0.02)
+	var ds := L / SEGS
 	var pts := PackedVector3Array()
 	var src := PackedVector3Array()
 	var widths := PackedFloat32Array()
-	var L: float = maxf(c.len, 0.02)
-	var ds := L / SEGS
-	var phi := PI * 0.62 # rises up and back off the blade face
+	var phi := PI * 0.6 # leaves the edge rising up the blade face
 	var cx := 0.0
 	var cy := 0.0
+	var cz := 0.0
 	var path: PackedVector3Array = c.path
 	var plen: PackedFloat32Array = c.path_len
 	var total: float = plen[plen.size() - 1]
+	var root: Vector3 = c.root
+	var turn := 0.0
 	for i in SEGS + 1:
 		var s := i * ds
-		var root: Vector3 = c.root
-		pts.append(root + x * cx + y * cy + y * 0.004)
-		# Where this part of the ribbon came from: back along the stroke path.
+		var m := L - s # material coordinate of this point
+		pts.append(root + x * cx + y * (cy + 0.004) + z * cz)
 		src.append(_path_at(path, plen, total - s / 0.9) - y * (c.thick as float) * 0.5)
 		var u := s / L
-		var taper := smoothstep(0.0, 0.12, 1.0 - u) * 0.6 + 0.4 # thin tail where the cut began
-		var wav := 1.0 + 0.08 * sin(s * 23.0 + c.wobble)
-		widths.append(c.width * taper * wav)
-		var r: float = c.r0 * (1.0 - 0.45 * (s / (L + 0.5)))
-		phi -= ds / r
+		var taper := lerpf(1.0, 0.45, smoothstep(0.82, 1.0, u)) # thin tail where the cut began
+		widths.append(c.width * taper * (1.0 + 0.06 * sin(m * 23.0 + c.wobble)))
+		var k := ds / _curl_radius(c, m)
+		phi -= k
+		turn += k
 		cx += cos(phi) * ds
 		cy += sin(phi) * ds
+		cz += (c.pitch as float) * (c.width as float) * k / TAU # slight helix from a skewed edge
 	return {"pts": pts, "src": src, "w": widths, "side": z}
+
 
 func _path_at(path: PackedVector3Array, plen: PackedFloat32Array, d: float) -> Vector3:
 	if d <= 0.0:
@@ -216,6 +228,7 @@ func _path_at(path: PackedVector3Array, plen: PackedFloat32Array, d: float) -> V
 			return path[i - 1].lerp(path[i], t)
 	return path[path.size() - 1]
 
+
 func _build_attached(c: Dictionary) -> void:
 	var d := _attached_points(c)
 	var sides := PackedVector3Array()
@@ -226,7 +239,7 @@ func _build_attached(c: Dictionary) -> void:
 
 ## Ribbon with real thickness: top and bottom faces plus both edges. Sources ride in CUSTOM0.
 func _ribbon_mesh(pts: PackedVector3Array, sides: PackedVector3Array, widths: PackedFloat32Array,
-		src: PackedVector3Array, thick: float, src_side: Vector3, src_scale := 1.0) -> ArrayMesh:
+		src: PackedVector3Array, thick: float, src_side: Vector3) -> ArrayMesh:
 	var n := pts.size()
 	var verts := PackedVector3Array()
 	var norms := PackedVector3Array()
@@ -251,12 +264,12 @@ func _ribbon_mesh(pts: PackedVector3Array, sides: PackedVector3Array, widths: Pa
 		verts[b + 2] = bl; verts[b + 3] = br; norms[b + 2] = -up; norms[b + 3] = -up
 		verts[b + 4] = tl; verts[b + 5] = bl; norms[b + 4] = side; norms[b + 5] = side
 		verts[b + 6] = tr; verts[b + 7] = br; norms[b + 6] = -side; norms[b + 7] = -side
-		var s := src[i]
+		var sp := src[i]
 		for k in 8:
-			var off := src_side * hw * src_scale * (1.0 if k in [0, 2, 4, 5] else -1.0)
-			custom[(b + k) * 4] = s.x + off.x
-			custom[(b + k) * 4 + 1] = s.y + off.y
-			custom[(b + k) * 4 + 2] = s.z + off.z
+			var off := src_side * hw * (1.0 if k in [0, 2, 4, 5] else -1.0)
+			custom[(b + k) * 4] = sp.x + off.x
+			custom[(b + k) * 4 + 1] = sp.y + off.y
+			custom[(b + k) * 4 + 2] = sp.z + off.z
 			custom[(b + k) * 4 + 3] = 0.0
 		if i < n - 1:
 			var nb := b + 8
@@ -278,7 +291,8 @@ func _ribbon_mesh(pts: PackedVector3Array, sides: PackedVector3Array, widths: Pa
 	return m
 
 
-## Let go of the curl being grown: it becomes a soft body in world space.
+## Let go of the curl being grown. It keeps its exact shape and becomes a light rigid body: it
+## tumbles off the blade, bounces a little (wood is springy), and settles where it lands.
 func release_curl() -> void:
 	var c := _active
 	if c.is_empty():
@@ -288,106 +302,57 @@ func release_curl() -> void:
 	if c.len < 0.08:
 		mi.queue_free()
 		return
+	var log_node := mi.get_parent_node_3d()
+	var xf := log_node.global_transform # includes the inch scale
 	var d := _attached_points(c)
-	var xf := mi.get_parent_node_3d().global_transform
-	var pts := PackedVector3Array()
-	for p in (d.pts as PackedVector3Array):
-		pts.append(xf * p)
-	var side_w: Vector3 = (xf.basis * (d.side as Vector3)).normalized()
-	var scale := xf.basis.get_scale().x
-	var body := {
-		"mesh": mi, "pts": pts, "prev": pts.duplicate(), "src": d.src, "w": d.w, "thick": c.thick,
-		"side0": side_w, "src_side": d.side, "scale": scale, "stroke": c.stroke, "rest": false, "still": 0,
-		"rest1": PackedFloat32Array(), "rest2": PackedFloat32Array(),
-	}
-	var r1 := PackedFloat32Array()
-	var r2 := PackedFloat32Array()
-	for i in pts.size() - 1:
-		r1.append(pts[i].distance_to(pts[i + 1]))
-	for i in pts.size() - 2:
-		r2.append(pts[i].distance_to(pts[i + 2]))
-	body.rest1 = r1
-	body.rest2 = r2
-	# A small flick off the blade.
-	var kick := Vector3(randf_range(-0.15, 0.15), randf_range(0.1, 0.35), randf_range(-0.15, 0.15)) * (1.0 / 60.0)
-	var prev: PackedVector3Array = body.prev
-	for i in prev.size():
-		prev[i] = pts[i] - kick
-	body.prev = prev
-	mi.reparent(self, false)
-	mi.transform = Transform3D.IDENTITY
-	_curls.append(body)
-	_rebuild_body(body)
+	var pts: PackedVector3Array = d.pts
+	# Body origin at the curl's centroid (world, unscaled); mesh stays in inches under a scaled holder.
+	var centroid := Vector3.ZERO
+	for q in pts:
+		centroid += xf * q
+	centroid /= pts.size()
+	var body := RigidBody3D.new()
+	body.mass = 0.002
+	body.gravity_scale = 1.0
+	body.linear_damp = 1.6 # light, broad: air drag matters
+	body.angular_damp = 1.2
+	body.continuous_cd = true
+	body.can_sleep = true
+	var pm := PhysicsMaterial.new()
+	pm.friction = 0.9
+	pm.bounce = 0.3
+	body.physics_material_override = pm
+	add_child(body)
+	body.global_transform = Transform3D(xf.basis.orthonormalized(), centroid)
+	var holder := Node3D.new()
+	body.add_child(holder)
+	holder.global_transform = xf
+	mi.reparent(holder, true)
+	# Collision: convex hull of the ribbon's edges, sampled along its length.
+	var side: Vector3 = d.side
+	var w: PackedFloat32Array = d.w
+	var hull := PackedVector3Array()
+	var inv := body.global_transform.affine_inverse()
+	for i in range(0, pts.size(), 3):
+		for sgn in [-0.5, 0.5]:
+			hull.append(inv * (xf * (pts[i] + side * w[i] * sgn)))
+	var shape := ConvexPolygonShape3D.new()
+	shape.points = hull
+	var cs := CollisionShape3D.new()
+	cs.shape = shape
+	body.add_child(cs)
+	# Flicked off the edge: up and forward along the cut, with a gentle spin.
+	var dir_w := (xf.basis * (c.dir as Vector3)).normalized()
+	var up_w := (xf.basis * (c.n as Vector3)).normalized()
+	body.linear_velocity = up_w * randf_range(0.25, 0.5) + dir_w * randf_range(0.1, 0.3)
+	body.angular_velocity = Vector3(randf_range(-4, 4), randf_range(-4, 4), randf_range(-4, 4))
+	body.sleeping_state_changed.connect(func():
+		if body.sleeping:
+			body.freeze = true) # settled: stop simulating, stays put
+	_curls.append({"body": body, "stroke": c.stroke})
 	while _curls.size() > MAX_CURLS:
 		var old: Dictionary = _curls.pop_front()
-		(old.mesh as MeshInstance3D).queue_free()
-
-
-func _rebuild_body(b: Dictionary) -> void:
-	var pts: PackedVector3Array = b.pts
-	var n := pts.size()
-	# Parallel-transport the ribbon's side vector along the chain.
-	var sides := PackedVector3Array()
-	sides.resize(n)
-	var side: Vector3 = b.side0
-	for i in n:
-		var tan := (pts[mini(i + 1, n - 1)] - pts[maxi(i - 1, 0)]).normalized()
-		side = (side - tan * side.dot(tan)).normalized()
-		if side == Vector3.ZERO:
-			side = tan.cross(Vector3.UP).normalized()
-		sides[i] = side
-	var widths := PackedFloat32Array()
-	for w in (b.w as PackedFloat32Array):
-		widths.append(w * b.scale)
-	(b.mesh as MeshInstance3D).mesh = _ribbon_mesh(pts, sides, widths, b.src, b.thick * b.scale, b.src_side, 1.0 / b.scale)
-
-
-func _simulate_curl(b: Dictionary, dt: float) -> void:
-	var pts: PackedVector3Array = b.pts
-	var prev: PackedVector3Array = b.prev
-	var n := pts.size()
-	var r1: PackedFloat32Array = b.rest1
-	var r2: PackedFloat32Array = b.rest2
-	var moved := 0.0
-	for i in n:
-		var p := pts[i]
-		var v := (p - prev[i]) * 0.985
-		prev[i] = p
-		pts[i] = p + v + GRAVITY * 0.45 * dt * dt # light and draggy
-	for _it in 6:
-		for i in n - 1:
-			_constrain(pts, i, i + 1, r1[i], 1.0)
-		for i in n - 2:
-			_constrain(pts, i, i + 2, r2[i], 0.35) # bending: keeps the curl springy
-		for i in n:
-			var p := pts[i]
-			var floor_y: float = surface_height.call(p.x, p.z) + b.thick * b.scale * 0.5
-			if p.y < floor_y:
-				p.y = floor_y
-				# Friction: kill most sideways motion on contact.
-				var pv := prev[i]
-				prev[i] = Vector3(lerpf(pv.x, p.x, 0.6), pv.y, lerpf(pv.z, p.z, 0.6))
-				pts[i] = p
-	for i in n:
-		moved = maxf(moved, pts[i].distance_squared_to(prev[i]))
-	b.pts = pts
-	b.prev = prev
-	if moved < 1e-10:
-		b.still += 1
-		if b.still > 20:
-			b.rest = true
-	else:
-		b.still = 0
-	_rebuild_body(b)
-
-func _constrain(pts: PackedVector3Array, i: int, j: int, rest: float, k: float) -> void:
-	var d := pts[j] - pts[i]
-	var l := d.length()
-	if l < 1e-9:
-		return
-	var corr := d * ((l - rest) / l) * 0.5 * k
-	pts[i] += corr
-	pts[j] -= corr
+		(old.body as Node).queue_free()
 
 
 # ------------------------------------------------------------------ flakes and dust
@@ -400,7 +365,7 @@ func spawn_flakes(stroke_id: int, p: Vector3, n: Vector3, grain: Vector3, count:
 		_f_next = (_f_next + 1) % MAX_FLAKES
 		_f_flying[i] = true
 		_f_pos[i] = p + Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * 0.004
-		_f_vel[i] = n * randf_range(0.2, 0.6) + Vector3(randf_range(-0.25, 0.25), randf_range(0.05, 0.4), randf_range(-0.25, 0.25))
+		_f_vel[i] = n * randf_range(0.25, 0.7) + Vector3(randf_range(-0.2, 0.2), randf_range(0.1, 0.45), randf_range(-0.2, 0.2))
 		_f_rot[i] = Vector3(randf() * TAU, randf() * TAU, randf() * TAU)
 		_f_spin[i] = Vector3(randf_range(-14, 14), randf_range(-14, 14), randf_range(-14, 14))
 		var s := size_in * INCH * randf_range(0.6, 1.4)
@@ -429,7 +394,7 @@ func remove_stroke(stroke_id: int) -> void:
 		release_curl()
 	for b in _curls.duplicate():
 		if b.stroke == stroke_id:
-			(b.mesh as MeshInstance3D).queue_free()
+			(b.body as Node).queue_free()
 			_curls.erase(b)
 	var zero := Transform3D().scaled(Vector3.ZERO)
 	for i in MAX_FLAKES:
@@ -444,7 +409,7 @@ func clear_all() -> void:
 		(_active.mesh as MeshInstance3D).queue_free()
 		_active = {}
 	for b in _curls:
-		(b.mesh as MeshInstance3D).queue_free()
+		(b.body as Node).queue_free()
 	_curls.clear()
 	var zero := Transform3D().scaled(Vector3.ZERO)
 	for i in MAX_FLAKES:
@@ -456,27 +421,29 @@ func clear_all() -> void:
 func _process(delta: float) -> void:
 	var dt := minf(delta, 1.0 / 30.0)
 	_time += dt
-	for b in _curls:
-		if not b.rest:
-			_simulate_curl(b, dt)
 
 	var mm := _flakes.multimesh
 	for i in _f_flying.keys():
 		var v := _f_vel[i]
-		v += GRAVITY * 0.6 * dt
-		v *= 0.965
-		# Flutter: thin flakes catch the air.
-		v.x += sin(_time * 9.0 + i) * 0.02
-		v.z += cos(_time * 7.0 + i * 1.7) * 0.02
+		v += GRAVITY * dt
+		# Thin flakes catch a little air: mild drag, and a sideways drift that grows as they fall.
+		v *= 1.0 - 1.8 * dt
 		var p := _f_pos[i] + v * dt
 		var r := _f_rot[i] + _f_spin[i] * dt
 		var floor_y: float = surface_height.call(p.x, p.z) + _f_scale[i].y * 0.5
 		if p.y < floor_y:
 			p.y = floor_y
-			r.x = randf_range(-0.2, 0.2)
-			r.z = randf_range(-0.2, 0.2)
-			_f_state[i] = 2
-			_f_flying.erase(i)
+			if v.y < -0.35:
+				# Wood clicks and hops once, losing most of its energy.
+				v = Vector3(v.x * 0.4, -v.y * 0.22, v.z * 0.4)
+				_f_spin[i] *= 0.35
+			else:
+				r.x = lerp_angle(r.x, 0.0, 1.0)
+				r.z = lerp_angle(r.z, 0.0, 1.0)
+				r.x = randf_range(-0.12, 0.12)
+				r.z = randf_range(-0.12, 0.12)
+				_f_state[i] = 2
+				_f_flying.erase(i)
 		_f_pos[i] = p
 		_f_vel[i] = v
 		_f_rot[i] = r

@@ -5,7 +5,9 @@ extends Node
 
 const RATE := 44100.0
 
-var muted := false
+## Linear gains (0..1) for the two channels; set from Settings.
+var tools_gain := 0.9
+var ambience_gain := 0.6
 var _player := AudioStreamPlayer.new()
 var _pb: AudioStreamGeneratorPlayback
 var _cut_target := 0.0
@@ -89,6 +91,6 @@ func _process(_delta: float) -> void:
 			_lp2 = 0.25 + _rng.randf() * 0.4
 		fire += _lp2 * w
 		_lp2 *= 0.985
-		var s := 0.0 if muted else clampf(knife + saw + sand + fire, -1.0, 1.0)
+		var s := clampf((knife + saw + sand) * tools_gain + fire * ambience_gain * 1.6, -1.0, 1.0)
 		_pb.push_frame(Vector2(s, s))
 	_cut_target *= 0.9

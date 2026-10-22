@@ -7,7 +7,8 @@ signal tool_selected(id: String)
 signal undo_pressed
 signal flip_pressed
 signal new_log_pressed
-signal mute_toggled(muted: bool)
+signal settings_changed
+signal quit_pressed
 
 const INK := Color("#f3e6d2")
 const INK_DIM := Color("#c9b49a")
@@ -32,8 +33,9 @@ var hint := Label.new()
 var _hint_t := 0.0
 var _tool_buttons := {}
 var _undo_btn: Button
-var _mute_btn: Button
-var _muted := false
+var settings: Settings ## assign before adding to the tree
+var menu := Control.new()
+var settings_panel := Control.new()
 var _sel_species := "basswood"
 var _sel_size := "medium"
 var serif := SystemFont.new()
@@ -53,6 +55,8 @@ func _ready() -> void:
 	_build_hud()
 	_build_start()
 	_build_help()
+	_build_menu()
+	_build_settings()
 
 
 func _box(c: Color, radius := 14, pad := 10) -> StyleBoxFlat:
@@ -97,25 +101,24 @@ func _build_hud() -> void:
 	var tl := HBoxContainer.new()
 	tl.position = Vector2(18, 18)
 	tl.add_theme_constant_override("separation", 8)
-	tl.add_child(_button("New log", func(): new_log_pressed.emit()))
+	tl.add_child(_button("Menu  (Esc)", func(): open_menu()))
 	_undo_btn = _button("Undo  (Z)", func(): undo_pressed.emit())
 	_undo_btn.disabled = true
 	tl.add_child(_undo_btn)
 	tl.add_child(_button("Switch grip  (F)", func(): flip_pressed.emit()))
 	hud.add_child(tl)
 
-	var tr := HBoxContainer.new()
-	tr.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	tr.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	tr.position = Vector2(-18, 18)
-	tr.add_theme_constant_override("separation", 8)
-	_mute_btn = _button("Sound on", func():
-		_muted = not _muted
-		_mute_btn.text = "Sound off" if _muted else "Sound on"
-		mute_toggled.emit(_muted))
-	tr.add_child(_mute_btn)
-	tr.add_child(_button("How to whittle", func(): help.visible = not help.visible))
-	hud.add_child(tr)
+	var keys := Label.new()
+	keys.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	keys.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	keys.offset_left = -560
+	keys.offset_right = -22
+	keys.offset_top = 22
+	keys.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	keys.add_theme_font_size_override("font_size", 14)
+	keys.add_theme_color_override("font_color", INK_FAINT)
+	keys.text = "Left-drag: carve   Right-drag: turn & tilt   Scroll: closer   R: reset"
+	hud.add_child(keys)
 
 	var strip := CenterContainer.new()
 	strip.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
@@ -228,7 +231,16 @@ func _build_start() -> void:
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 10)
 	col.add_child(spacer)
-	col.add_child(go)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 10)
+	actions.add_child(go)
+	var st := _button("Settings", func(): show_settings(true))
+	st.custom_minimum_size = Vector2(140, 56)
+	actions.add_child(st)
+	var q := _button("Quit", func(): quit_pressed.emit())
+	q.custom_minimum_size = Vector2(110, 56)
+	actions.add_child(q)
+	col.add_child(actions)
 
 
 func _section(text: String) -> Label:
@@ -252,22 +264,180 @@ func _build_help() -> void:
 	t.text = """[font_size=26]How to whittle[/font_size]
 
 [b]Carve[/b]: hold the left mouse button and drag across the wood. Each stroke takes an even layer; go over an area again to go deeper.
-[b]Turn the log[/b]: drag with the right mouse button. [b]Closer / further[/b]: scroll.
+[b]Closer / further[/b]: scroll.
 
 [b]Read the grain.[/b] Fibres run the length of the log. Cutting along them lifts long curls; across them gives short flakes. On a slope, cut [b]downhill[/b]: cutting uphill lets the blade follow the fibres in and tear them out. End grain is tough; take light cuts.
 
 [b]Saw[/b] by dragging back and forth along your line; saw all the way through and the piece drops away. [b]Sandpaper[/b] blends facets into smooth curves.
 
-Keys: [b]1–7[/b] tools · [b]Z[/b] undo · [b]F[/b] switch grip end · [b]H[/b] hide interface · [b]Esc[/b] close"""
-	help.add_child(t)
+Turn the log: [b]right-drag[/b] (sideways spins it in your hand, up/down tilts it), or [b]A/D[/b] spin, [b]W/S[/b] tilt, [b]Q/E[/b] roll, [b]R[/b] reset.
+
+Keys: [b]1–7[/b] tools · [b]Z[/b] undo · [b]F[/b] switch grip end · [b]H[/b] hide interface · [b]Esc[/b] menu"""
+	var hcol := VBoxContainer.new()
+	hcol.add_theme_constant_override("separation", 12)
+	hcol.add_child(t)
+	hcol.add_child(_button("Close", func(): help.visible = false))
+	help.add_child(hcol)
 	root.add_child(help)
 	help.reset_size()
 	help.position = -help.size / 2
 
 
+func _overlay(title_text: String) -> VBoxContainer:
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(440, 0)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 10)
+	var t := Label.new()
+	t.text = title_text
+	t.add_theme_font_override("font", serif)
+	t.add_theme_font_size_override("font_size", 40)
+	col.add_child(t)
+	panel.add_child(col)
+	center.add_child(panel)
+	return col
+
+
+func _build_menu() -> void:
+	menu.set_anchors_preset(Control.PRESET_FULL_RECT)
+	menu.visible = false
+	root.add_child(menu)
+	var col := _overlay("Paused")
+	var shade := ColorRect.new()
+	shade.color = Color(0.05, 0.03, 0.02, 0.62)
+	shade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	menu.add_child(shade)
+	menu.add_child(col.get_parent().get_parent())
+	for item in [
+		["Resume", func(): close_menu()],
+		["Settings", func(): show_settings(true)],
+		["How to whittle", func():
+			help.visible = true
+			help.move_to_front()],
+		["New log", func():
+			close_menu()
+			new_log_pressed.emit()],
+		["Quit to desktop", func(): quit_pressed.emit()],
+	]:
+		var b := _button(item[0], item[1])
+		b.custom_minimum_size = Vector2(0, 52)
+		col.add_child(b)
+
+
+func _slider_row(col: VBoxContainer, label: String, value: float, on_change: Callable, toggle: Variant = null, on_toggle: Callable = Callable()) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	var l := Label.new()
+	l.text = label
+	l.custom_minimum_size = Vector2(170, 0)
+	row.add_child(l)
+	if toggle != null:
+		var cb := CheckButton.new()
+		cb.button_pressed = toggle
+		cb.focus_mode = Control.FOCUS_NONE
+		cb.toggled.connect(on_toggle)
+		cb.custom_minimum_size = Vector2(60, 0)
+		row.add_child(cb)
+	else:
+		var pad := Control.new()
+		pad.custom_minimum_size = Vector2(60, 0)
+		row.add_child(pad)
+	var sl := HSlider.new()
+	sl.min_value = 0.0
+	sl.max_value = 1.0
+	sl.step = 0.01
+	sl.value = value
+	sl.custom_minimum_size = Vector2(220, 0)
+	sl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	sl.focus_mode = Control.FOCUS_NONE
+	sl.value_changed.connect(on_change)
+	row.add_child(sl)
+	col.add_child(row)
+
+
+func _build_settings() -> void:
+	for c in settings_panel.get_children():
+		c.queue_free()
+	settings_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	settings_panel.visible = false
+	if settings_panel.get_parent() == null:
+		root.add_child(settings_panel)
+	var col := _overlay("Settings")
+	var shade := ColorRect.new()
+	shade.color = Color(0.05, 0.03, 0.02, 0.5)
+	shade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	settings_panel.add_child(shade)
+	settings_panel.add_child(col.get_parent().get_parent())
+	(col.get_parent() as Control).custom_minimum_size = Vector2(560, 0)
+	var s := settings
+	var changed := func():
+		s.save()
+		settings_changed.emit()
+	_slider_row(col, "Master volume", s.master, func(v): s.master = v; changed.call())
+	_slider_row(col, "Carving sounds", s.carving, func(v): s.carving = v; changed.call(),
+		s.carving_on, func(on): s.carving_on = on; changed.call())
+	_slider_row(col, "Fire & room", s.ambience, func(v): s.ambience = v; changed.call(),
+		s.ambience_on, func(on): s.ambience_on = on; changed.call())
+	_slider_row(col, "Turn sensitivity", s.sensitivity * 0.5, func(v): s.sensitivity = maxf(0.2, v * 2.0); changed.call())
+	var fs := CheckButton.new()
+	fs.text = "Fullscreen"
+	fs.button_pressed = s.fullscreen
+	fs.focus_mode = Control.FOCUS_NONE
+	fs.toggled.connect(func(on): s.fullscreen = on; changed.call())
+	col.add_child(fs)
+	var back := _button("Back", func(): show_settings(false))
+	back.custom_minimum_size = Vector2(0, 48)
+	col.add_child(back)
+
+
+var _settings_from_menu := false
+
+func show_settings(on: bool) -> void:
+	if on:
+		_settings_from_menu = menu.visible
+		menu.visible = false
+	elif _settings_from_menu:
+		menu.visible = true
+	settings_panel.visible = on
+	settings_panel.move_to_front()
+
+
+func open_menu() -> void:
+	if start.visible:
+		return
+	menu.visible = true
+
+
+func close_menu() -> void:
+	menu.visible = false
+	settings_panel.visible = false
+	help.visible = false
+
+
+## Esc: close the topmost overlay, or open the menu.
+func back() -> void:
+	if help.visible:
+		help.visible = false
+	elif settings_panel.visible:
+		show_settings(false)
+	elif menu.visible:
+		menu.visible = false
+	elif not start.visible:
+		menu.visible = true
+
+
+func is_blocking() -> bool:
+	return start.visible or menu.visible or settings_panel.visible or help.visible
+
+
 func show_start(on: bool) -> void:
 	start.visible = on
 	hud.visible = not on
+	if on:
+		close_menu()
 
 
 func set_tool(id: String) -> void:
