@@ -141,7 +141,7 @@ func grow_curl(stroke_id: int, log_node: Node3D, p: Vector3, t: Vector3, n: Vect
 	var c := _active
 	if not c.is_empty():
 		var changed: bool = c.stroke != stroke_id or (c.dir as Vector3).dot(t) < 0.5 \
-			or absf(c.width - width) > maxf(0.08, c.width * 0.6) or c.len > 6.0
+			or absf(c.width - width) > maxf(0.08, c.width * 0.6) or c.len > c.break_len
 		if changed:
 			release_curl()
 			c = {}
@@ -154,7 +154,7 @@ func grow_curl(stroke_id: int, log_node: Node3D, p: Vector3, t: Vector3, n: Vect
 		# Tighter curls from thin cuts in soft wood; stiffer, harder woods curl looser.
 		var r0 := 0.07 + thick * 2.2 + width * 0.04 + (1.0 - softness) * 0.07
 		c = {
-			"mesh": mi, "len": 0.0, "width": maxf(0.04, width), "thick": thick,
+			"mesh": mi, "len": 0.0, "break_len": randf_range(1.1, 2.6), "grown_at": 0.0, "width": maxf(0.04, width), "thick": thick,
 			"r0": r0, "stroke": stroke_id, "dir": t, "n": n, "root": p,
 			"path": PackedVector3Array([p]), "path_len": PackedFloat32Array([0.0]),
 			"wobble": randf() * 100.0, "pitch": randf_range(-0.25, 0.25),
@@ -169,6 +169,7 @@ func grow_curl(stroke_id: int, log_node: Node3D, p: Vector3, t: Vector3, n: Vect
 	c.path_len = plen
 	c.len += add * 0.9 # a shaving is a little shorter than the cut (it compresses as it curls)
 	c.root = p
+	c.grown_at = _time
 	# The frame is fixed when the curl starts: once wood has curled, it keeps its shape.
 	_build_attached(c)
 
@@ -344,12 +345,13 @@ func release_curl() -> void:
 	# Flicked off the edge: up and forward along the cut, with a gentle spin.
 	var dir_w := (xf.basis * (c.dir as Vector3)).normalized()
 	var up_w := (xf.basis * (c.n as Vector3)).normalized()
-	body.linear_velocity = up_w * randf_range(0.25, 0.5) + dir_w * randf_range(0.1, 0.3)
-	body.angular_velocity = Vector3(randf_range(-4, 4), randf_range(-4, 4), randf_range(-4, 4))
-	body.sleeping_state_changed.connect(func():
-		if body.sleeping:
-			body.freeze = true) # settled: stop simulating, stays put
-	_curls.append({"body": body, "stroke": c.stroke})
+	body.linear_velocity = up_w * randf_range(0.06, 0.18) + dir_w * randf_range(0.02, 0.08)
+	body.angular_velocity = Vector3(randf_range(-2.5, 2.5), randf_range(-2.5, 2.5), randf_range(-2.5, 2.5))
+	# Curls only collide with the room, not each other: light bodies stacked on each other jitter.
+	body.collision_layer = 2
+	body.collision_mask = 1
+	body.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+	_curls.append({"body": body, "stroke": c.stroke, "born": _time, "still": 0.0})
 	while _curls.size() > MAX_CURLS:
 		var old: Dictionary = _curls.pop_front()
 		(old.body as Node).queue_free()
@@ -421,6 +423,18 @@ func clear_all() -> void:
 func _process(delta: float) -> void:
 	var dt := minf(delta, 1.0 / 30.0)
 	_time += dt
+	# A curl drops off the blade when the cut pauses (real shavings break off when pressure stops).
+	if not _active.is_empty() and _time - (_active.grown_at as float) > 0.18:
+		release_curl()
+	# Settle: once a curl has been nearly still for a moment (or has been falling too long), pin it.
+	for c in _curls:
+		var b: RigidBody3D = c.body
+		if b.freeze:
+			continue
+		var slow := b.linear_velocity.length() < 0.03 and b.angular_velocity.length() < 0.6
+		c.still = (c.still + dt) if slow else 0.0
+		if c.still > 0.25 or _time - (c.born as float) > 5.0:
+			b.freeze = true
 
 	var mm := _flakes.multimesh
 	for i in _f_flying.keys():

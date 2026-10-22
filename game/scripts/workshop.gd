@@ -52,7 +52,7 @@ func _build_environment() -> void:
 	env.ambient_light_color = Color("#3a2a1e")
 	env.ambient_light_energy = 0.6
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
-	env.tonemap_exposure = 1.05
+	env.tonemap_exposure = 0.95
 	env.ssao_enabled = true
 	env.ssao_radius = 0.6
 	env.ssao_intensity = 1.6
@@ -62,8 +62,8 @@ func _build_environment() -> void:
 	env.sdfgi_cascades = 4
 	env.sdfgi_min_cell_size = 0.05
 	env.glow_enabled = true
-	env.glow_intensity = 0.35
-	env.glow_bloom = 0.04
+	env.glow_intensity = 0.2
+	env.glow_bloom = 0.0
 	env.volumetric_fog_enabled = true
 	env.volumetric_fog_density = 0.012
 	env.volumetric_fog_albedo = Color("#d8c3a5")
@@ -214,7 +214,7 @@ func _build_room() -> void:
 func _build_lights() -> void:
 	work_light = SpotLight3D.new()
 	work_light.light_color = Color("#ffd6a0")
-	work_light.light_energy = 5.0
+	work_light.light_energy = 3.4
 	work_light.spot_range = 3.0
 	work_light.spot_angle = 30.0
 	work_light.spot_angle_attenuation = 0.8
@@ -237,7 +237,9 @@ func _build_lights() -> void:
 	_fire.light_color = Color("#ff7a30")
 	_fire.light_energy = 1.3
 	_fire.omni_range = 5.0
-	_fire.shadow_enabled = true
+	# No omni shadows: omni shadow maps store linear distance from the mesh surface, which can't
+	# carry the raymarched log's depth (it would cast the shadow of its bounding box).
+	_fire.shadow_enabled = false
 	_fire.position = Vector3(1.85, 0.32, -1.0)
 	add_child(_fire)
 

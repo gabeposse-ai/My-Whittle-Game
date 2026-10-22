@@ -64,7 +64,10 @@ void fragment() {
 			S(g + vec3(0, h, 0)) - S(g - vec3(0, h, 0)),
 			S(g + vec3(0, 0, h)) - S(g - vec3(0, 0, h))));
 	vec3 p = (g - centre) / vpi; // local inches
-	vec3 pw = (local_to_world * vec4(p, 1.0)).xyz;
+	// Shadow maps: push the depth slightly away from the light (the engine's own bias only moves
+	// the bounding box, not the traced surface) to avoid self-shadow acne.
+	vec3 pdepth = IN_SHADOW_PASS ? (g + d * 1.2 - centre) / vpi : p;
+	vec3 pw = (local_to_world * vec4(pdepth, 1.0)).xyz;
 	vec4 clip = PROJECTION_MATRIX * VIEW_MATRIX * vec4(pw, 1.0);
 #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
 	DEPTH = clip.z / clip.w * 0.5 + 0.5; // OpenGL: NDC z in [-1, 1]
@@ -74,7 +77,10 @@ void fragment() {
 	vec3 nw = normalize((transpose(world_to_local) * vec4(n, 0.0)).xyz);
 	NORMAL = normalize((VIEW_MATRIX * vec4(nw, 0.0)).xyz);
 	float bark = bark_at(p);
-	ALBEDO = mix(wood_color(p), bark_shade(p), bark);
-	ROUGHNESS = mix(0.52, 0.95, bark);
-	SPECULAR = mix(0.45, 0.2, bark);
+	// End grain (surfaces facing along the log axis) is porous: it reads darker and fully matte.
+	float end_grain = smoothstep(0.55, 0.95, abs(n.y));
+	vec3 wood = wood_color(p) * mix(1.0, 0.74, end_grain);
+	ALBEDO = mix(wood, bark_shade(p), bark);
+	ROUGHNESS = mix(mix(0.62, 0.9, end_grain), 0.95, bark);
+	SPECULAR = mix(mix(0.32, 0.15, end_grain), 0.15, bark);
 }
