@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://xvqac4cdle88"
+path="res://.godot/imported/log_carve.glsl-6723520bdc6c0d534ee235f95beab63e.res"
+
+[deps]
+
+source_file="res://shaders/log_carve.glsl"
+dest_files=["res://.godot/imported/log_carve.glsl-6723520bdc6c0d534ee235f95beab63e.res"]
+
+[params]
+

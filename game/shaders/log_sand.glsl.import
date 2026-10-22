@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bw87p61uu8140"
+path="res://.godot/imported/log_sand.glsl-322758d85589830a57407d353495b235.res"
+
+[deps]
+
+source_file="res://shaders/log_sand.glsl"
+dest_files=["res://.godot/imported/log_sand.glsl-322758d85589830a57407d353495b235.res"]
+
+[params]
+

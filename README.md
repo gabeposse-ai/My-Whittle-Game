@@ -1,8 +1,12 @@
 # Whittle
 
-A calm, first-person whittling simulator. Pick a log, pick your tools, and carve. No goals, no timers.
+A calm, first-person whittling game.
 
-**Play:** https://gabeposse-ai.github.io/my-whittle-game/ (deployed by GitHub Actions on every push to `main`).
+**Windows build:** download `Whittle-windows.zip` from the [latest-windows release](https://github.com/gabeposse-ai/my-whittle-game/releases/tag/latest-windows), unzip, run `Whittle.exe`. Rebuilt on every push that touches `game/`.
+
+The game lives in `game/` (Godot 4.7, Forward+). The repo root holds the original browser prototype (Three.js), still deployed at https://gabeposse-ai.github.io/My-Whittle-Game/.
+
+## Prototype (web)
 
 ## How it works
 

@@ -1,0 +1,65 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    paths: ['game/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-build
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.7.2
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Godot and export templates
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-win
+
+      - name: Download Godot and Windows templates
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          cd ~/godot
+          curl -sSL -o godot.zip https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip
+          unzip -q godot.zip && mv Godot_v${GODOT_VERSION}-stable_linux.x86_64 godot && rm godot.zip
+          curl -sSL -o tpl.tpz https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz
+          unzip -q -j tpl.tpz 'templates/windows_*_x86_64*' 'templates/version.txt' -d ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
+          rm tpl.tpz
+          ls ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable/
+
+      - name: Import project and validate shaders
+        run: |
+          ~/godot/godot --headless --path game --import 2>&1 | tail -20
+          ~/godot/godot --headless --path game -s res://scripts/tools/validate.gd
+
+      - name: Export Windows build
+        run: |
+          mkdir -p build
+          ~/godot/godot --headless --path game --export-release "Windows Desktop" ../build/Whittle.exe
+          cd build && ls -la && zip -q Whittle-windows.zip Whittle*.exe
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest-windows --cleanup-tag -y || true
+          gh release create latest-windows build/Whittle-windows.zip \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "Latest Windows build" \
+            --notes "Built from ${GITHUB_SHA::7}: $(git log -1 --pretty=%s)"

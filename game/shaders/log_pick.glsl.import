@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cyvo5dbfg6qs2"
+path="res://.godot/imported/log_pick.glsl-b2cdbaa694417c86aec79533c38832e7.res"
+
+[deps]
+
+source_file="res://shaders/log_pick.glsl"
+dest_files=["res://.godot/imported/log_pick.glsl-b2cdbaa694417c86aec79533c38832e7.res"]
+
+[params]
+
